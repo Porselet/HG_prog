@@ -37,15 +37,15 @@ namespace HG_prog
         {
             _port = new SerialPort(portName, baud, Parity.None, 8, StopBits.One)
             {
-                ReadTimeout = 1000,
-                WriteTimeout = 1000
+                ReadTimeout = 500,
+                WriteTimeout = 500
             };
             _port.Open();
             var factory = new ModbusFactory();
             _master = factory.CreateRtuMaster(_port);
-            _master.Transport.ReadTimeout = 1000;
-            _master.Transport.WriteTimeout = 1000;
-            _master.Transport.Retries = 2;
+            _master.Transport.ReadTimeout = 500;
+            _master.Transport.WriteTimeout = 500;
+            _master.Transport.Retries = 0;   // <-- БЕЗ РЕТРАЕВ, иначе 3x500 = 1.5 сек на запрос
         }
 
         public ushort[] ReadTelemetry() => _master.ReadInputRegisters(SlaveId, 0, 30);

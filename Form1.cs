@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace HG_prog
@@ -7,108 +8,183 @@ namespace HG_prog
     {
         private HgModbus _hg;
         private System.Windows.Forms.Timer _pollTimer;
-        private bool _uiBusy = false;
+        private volatile bool _busy = false;
+        private volatile bool _closing = false;
+        private volatile bool _connected = false;
 
         public Form1()
         {
             InitializeComponent();
-            _pollTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _pollTimer.Tick += PollTimer_Tick;
         }
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            string portName = "COM5";   // <-- свой COM-порт
-            //string portName = Properties.Settings.Default.ComPort ?? "COM5";
+            Config.EnsureExists();
+            string portName = Config.ComPort;
+
             try
             {
                 _hg = new HgModbus(portName, 9600);
+                _connected = true;
                 _pollTimer.Start();
-                this.Text = $"HG_prog [{portName}]";
+                this.Text = $"HG_prog [{portName}] — ожидание данных...";
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Не удалось открыть {portName}: {ex.Message}\n\n" +
-                                "Измени COM-порт в файле Properties\\Settings.settings " +
-                                "или в коде Form1_Load.", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _connected = false;
+                MessageBox.Show($"Не удалось открыть {portName}: {ex.Message}\n\n{Config.FilePath}",
+                                "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                this.Text = $"HG_prog [{portName}] — порт не открыт";
             }
         }
 
         private void PollTimer_Tick(object sender, EventArgs e)
         {
-            if (_hg == null || _uiBusy) return;
-            try
-            {
-                var ir = _hg.ReadTelemetry();
+            if (_hg == null || _busy || _closing) return;
+            _busy = true;
 
-                labelPress.Text = ir[HgModbus.IR_PRESS_INTERNAL].ToString();
-                labelFlow.Text = ir[HgModbus.IR_REAL_FLOW].ToString();
-                labelVolt.Text = ir[HgModbus.IR_VOLTAGE1].ToString();
-                labelAmp.Text = ir[HgModbus.IR_AMPERAGE1].ToString();
-                labelTemp.Text = ((short)ir[HgModbus.IR_TEMPERATURE]).ToString();
-
-                ushort err = ir[HgModbus.IR_ERROR];
-                this.Text = err == 0
-                    ? "HG_prog — НОРМА"
-                    : $"HG_prog — ОШИБКА {err}: {ErrorText(err)}";
-            }
-            catch
+            Task.Run(() =>
             {
-                this.Text = "HG_prog — НЕТ СВЯЗИ";
-            }
+                ushort[] ir = null;
+                string failReason = null;
+
+                try
+                {
+                    ir = _hg.ReadTelemetry();
+                }
+                catch (Exception ex)
+                {
+                    failReason = ex.Message;
+                }
+
+                try
+                {
+                    if (ir != null)
+                    {
+                        this.BeginInvoke(new Action(() =>
+                        {
+                            if (_closing) return;
+                            labelPress.Text = ir[HgModbus.IR_PRESS_INTERNAL].ToString();
+                            labelFlow.Text = ir[HgModbus.IR_REAL_FLOW].ToString();
+                            labelVolt.Text = ir[HgModbus.IR_VOLTAGE1].ToString();
+                            labelAmp.Text = ir[HgModbus.IR_AMPERAGE1].ToString();
+                            labelTemp.Text = ((short)ir[HgModbus.IR_TEMPERATURE]).ToString();
+
+                            ushort err = ir[HgModbus.IR_ERROR];
+                            this.Text = err == 0
+                                ? "HG_prog — НОРМА"
+                                : $"HG_prog — ОШИБКА {err}: {ErrorText(err)}";
+                        }));
+                    }
+                    else
+                    {
+                        this.BeginInvoke(new Action(() =>
+                        {
+                            if (!_closing) this.Text = "HG_prog — НЕТ СВЯЗИ";
+                        }));
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // форма уже закрывается — игнорируем
+                }
+                finally
+                {
+                    _busy = false;
+                }
+            });
         }
 
         private void btnOn_Click(object sender, EventArgs e)
         {
-            if (_hg == null) return;
-            _uiBusy = true;
-            try
+            if (_hg == null || _closing) return;
+            Task.Run(() =>
             {
-                _hg.WriteCoil(true);
-                MessageBox.Show("Команда ON отправлена (Coil 0).\n\n" +
-                                "ВНИМАНИЕ: без правки прошивки генератор на это не среагирует.",
-                                "ON", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception ex) { MessageBox.Show("ON: " + ex.Message); }
-            finally { _uiBusy = false; }
+                try
+                {
+                    _hg.WriteCoil(true);
+                    this.BeginInvoke(new Action(() =>
+                        MessageBox.Show("Команда ON отправлена (Coil 0).\n\n" +
+                                        "Без перепрошивки генератор на это не среагирует.",
+                                        "ON", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                }
+                catch (Exception ex)
+                {
+                    this.BeginInvoke(new Action(() => MessageBox.Show("ON: " + ex.Message)));
+                }
+            });
         }
 
         private void btnOff_Click(object sender, EventArgs e)
         {
-            if (_hg == null) return;
-            _uiBusy = true;
-            try
+            if (_hg == null || _closing) return;
+            Task.Run(() =>
             {
-                _hg.WriteCoil(false);
-                MessageBox.Show("Команда OFF отправлена (Coil 0).", "OFF",
-                                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception ex) { MessageBox.Show("OFF: " + ex.Message); }
-            finally { _uiBusy = false; }
+                try
+                {
+                    _hg.WriteCoil(false);
+                    this.BeginInvoke(new Action(() =>
+                        MessageBox.Show("Команда OFF отправлена (Coil 0).",
+                                        "OFF", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                }
+                catch (Exception ex)
+                {
+                    this.BeginInvoke(new Action(() => MessageBox.Show("OFF: " + ex.Message)));
+                }
+            });
         }
 
         private void btnApply_Click(object sender, EventArgs e)
         {
-            if (_hg == null) return;
-            if (!ushort.TryParse(textBoxSetpoint.Text, out ushort flow))
+            if (_hg == null || _closing) return;
+
+            if (!int.TryParse(textBoxSetpoint.Text, out int flowLitres))
             {
-                MessageBox.Show("Введи целое число 0…65535 (л/ч).", "Ошибка");
+                MessageBox.Show("Введи целое число от 0 до 300 (л/ч).", "Ошибка");
                 return;
             }
-            _uiBusy = true;
-            try
-            {
-                _hg.WriteUserFlow(flow);
-                MessageBox.Show($"Желаемый расход {flow} л/ч записан (Holding 0).",
-                                "OK", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception ex) { MessageBox.Show("Запись: " + ex.Message); }
-            finally { _uiBusy = false; }
-        }
 
+            if (flowLitres < 0 || flowLitres > 300)
+            {
+                MessageBox.Show("Допустимый диапазон: 0…300 л/ч.", "Ошибка");
+                return;
+            }
+
+            // В протоколе расход в 0.1 л/ч → умножаем на 10
+            ushort flowRaw = (ushort)(flowLitres * 10);
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    _hg.WriteUserFlow(flowRaw);
+                    this.BeginInvoke(new Action(() =>
+                        MessageBox.Show(
+                            $"Желаемый расход {flowLitres} л/ч записан.\n" +
+                            $"(В протокол ушло значение {flowRaw} — единицы 0.1 л/ч)",
+                            "OK", MessageBoxButtons.OK, MessageBoxIcon.Information)));
+                }
+                catch (Exception ex)
+                {
+                    this.BeginInvoke(new Action(() => MessageBox.Show("Запись: " + ex.Message)));
+                }
+            });
+        }
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
+            _closing = true;
             _pollTimer?.Stop();
+
+            // Ждём до 2 секунд, пока фоновый запрос завершится (он упадёт по таймауту ≤500 мс)
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (_busy && sw.ElapsedMilliseconds < 2000)
+            {
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(20);
+            }
+
             _hg?.Dispose();
         }
 

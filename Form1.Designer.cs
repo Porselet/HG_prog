@@ -65,7 +65,7 @@
             // Поле ввода
             this.textBoxSetpoint.Location = new System.Drawing.Point(12, 74);
             this.textBoxSetpoint.Size = new System.Drawing.Size(90, 22);
-            this.textBoxSetpoint.Text = "3000";
+            this.textBoxSetpoint.Text = "300";
 
             // Применить
             this.btnApply.Location = new System.Drawing.Point(110, 72);
